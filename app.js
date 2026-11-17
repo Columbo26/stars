@@ -12,6 +12,11 @@ function load() {
   try { return normalize(JSON.parse(localStorage.getItem(STORE))); } catch { return null; }
 }
 
+// Старый формат журнала хранил HTML — оставляем только текст.
+function htmlToText(html) {
+  return typeof html === 'string' ? new DOMParser().parseFromString(html, 'text/html').body.textContent.slice(0, 300) : '';
+}
+
 // Приводит загруженные/импортированные данные к ожидаемой форме, отбрасывая всё лишнее.
 function normalize(d) {
   if (!d || !Array.isArray(d.constellations) || !Array.isArray(d.players)) throw new Error('bad data');
@@ -55,8 +60,10 @@ function normalize(d) {
       exclusive: st.exclusive === undefined ? true : !!st.exclusive, title: str(st.title, def.settings.title),
     },
     difficulties, pools, constellations, players,
-    log: arr(d.log).filter(l => typeof l?.text === 'string').slice(0, 200)
-      .map(l => ({ t: num(l.t), color: col(l.color, '#8ab4ff'), name: str(l.name), text: str(l.text) })),
+    log: arr(d.log).slice(0, 200).map(l => ({
+      t: num(l?.t), color: col(l?.color, '#8ab4ff'), name: str(l?.name),
+      text: typeof l?.text === 'string' ? str(l.text) : htmlToText(l?.html),
+    })).filter(l => l.text),
   };
 }
 function save() { localStorage.setItem(STORE, JSON.stringify(state)); }
