@@ -9,7 +9,55 @@ const ui = { player: state.players[0]?.id || null, cons: null, rolling: null, ta
 const undoStack = [];
 
 function load() {
-  try { return JSON.parse(localStorage.getItem(STORE)); } catch { return null; }
+  try { return normalize(JSON.parse(localStorage.getItem(STORE))); } catch { return null; }
+}
+
+// Приводит загруженные/импортированные данные к ожидаемой форме, отбрасывая всё лишнее.
+function normalize(d) {
+  if (!d || !Array.isArray(d.constellations) || !Array.isArray(d.players)) throw new Error('bad data');
+  const def = defaultState();
+  const arr = v => Array.isArray(v) ? v : [];
+  const str = (v, f = '') => typeof v === 'string' ? v.slice(0, 300) : f;
+  const num = (v, f = 0) => Number.isFinite(Number(v)) ? Number(v) : f;
+  const col = (v, f) => /^#[0-9a-f]{6}$/i.test(v) ? v : f;
+  const ident = (v, f) => /^[\w-]{1,40}$/.test(v) ? v : f;
+  const difficulties = (arr(d.difficulties).length ? d.difficulties : def.difficulties).map((x, i) => ({
+    id: ident(x?.id, 'd' + i), name: str(x?.name, '?'), color: col(x?.color, '#888888'), duration: str(x?.duration), currency: num(x?.currency),
+  }));
+  const dids = new Set(difficulties.map(x => x.id));
+  const dOk = v => dids.has(v) ? v : difficulties[0].id;
+  const pools = {};
+  difficulties.forEach(x => pools[x.id] = arr(d.pools?.[x.id]).map(g => str(g)).filter(Boolean));
+  const constellations = d.constellations.map((c, i) => {
+    const stars = arr(c?.stars).map(st => ({ x: num(st?.x), y: num(st?.y), d: dOk(st?.d) }));
+    const edges = Array.isArray(c?.edges)
+      ? c.edges.filter(e => Array.isArray(e) && e.length === 2 && e.every(k => Number.isInteger(k) && k >= 0 && k < stars.length)) : null;
+    return { id: ident(c?.id, 'c' + i), name: str(c?.name, '?'), reward: str(c?.reward), bonus: num(c?.bonus), stars, edges };
+  }).filter(c => c.stars.length);
+  const consById = new Map(constellations.map(c => [c.id, c]));
+  const games = a => arr(a).map(g => ({ name: str(g?.name), d: dOk(g?.d) }));
+  const players = d.players.map((p, i) => {
+    const c = consById.get(p?.active?.cid);
+    const active = c ? {
+      cid: c.id, progress: Math.max(0, Math.min(c.stars.length - 1, Math.floor(num(p.active.progress)))),
+      game: p.active.game ? str(p.active.game) : null, games: games(p.active.games),
+    } : null;
+    return {
+      id: ident(p?.id, 'p' + i), name: str(p?.name, 'Игрок'), color: col(p?.color, PLAYER_COLORS[i % PLAYER_COLORS.length]),
+      balance: num(p?.balance), active, done: arr(p?.done).filter(x => consById.has(x?.cid)).map(x => ({ cid: x.cid, games: games(x.games) })),
+    };
+  });
+  const st = d.settings || {};
+  return {
+    version: 1,
+    settings: {
+      currencyName: str(st.currencyName, def.settings.currencyName), currencyIcon: str(st.currencyIcon, def.settings.currencyIcon),
+      exclusive: st.exclusive === undefined ? true : !!st.exclusive, title: str(st.title, def.settings.title),
+    },
+    difficulties, pools, constellations, players,
+    log: arr(d.log).filter(l => typeof l?.text === 'string').slice(0, 200)
+      .map(l => ({ t: num(l.t), color: col(l.color, '#8ab4ff'), name: str(l.name), text: str(l.text) })),
+  };
 }
 function save() { localStorage.setItem(STORE, JSON.stringify(state)); }
 function commit(fn) {
@@ -32,7 +80,8 @@ const diff = id => state.difficulties.find(d => d.id === id) || state.difficulti
 const getPlayer = id => state.players.find(p => p.id === id);
 const getCons = id => state.constellations.find(c => c.id === id);
 const cur = () => state.settings.currencyIcon;
-const money = n => `${n} ${cur()}`;
+const moneyText = n => `${Number(n)} ${cur()}`;
+const money = n => esc(moneyText(n));
 const edgesOf = c => c.edges || c.stars.slice(1).map((_, i) => [i, i + 1]);
 const activeOn = cid => state.players.filter(p => p.active?.cid === cid);
 const capturedBy = cid => state.players.filter(p => p.done.some(d => d.cid === cid));
@@ -48,8 +97,8 @@ function availability(p, c) {
   return null;
 }
 
-function log(p, html) {
-  state.log.unshift({ t: Date.now(), color: p?.color || '#8ab4ff', html });
+function log(p, text) {
+  state.log.unshift({ t: Date.now(), color: p?.color || '#8ab4ff', name: p?.name || '', text });
   state.log = state.log.slice(0, 200);
 }
 
@@ -106,7 +155,7 @@ function renderMap() {
       const d = diff(s.d), R = radius(s.d);
       const done = i < prog;
       const here = actives.filter(p => p.active.progress === i);
-      let tip = `${c.name} · звезда ${i + 1}/${c.stars.length}\n${d.name} сложность (${d.duration}) · +${money(d.currency)}`;
+      let tip = `${c.name} · звезда ${i + 1}/${c.stars.length}\n${d.name} сложность (${d.duration}) · +${moneyText(d.currency)}`;
       const games = [...captors.map(p => p.done.find(x => x.cid === c.id).games[i]), ...actives.map(p => p.active.games[i])].filter(Boolean);
       games.forEach(g => tip += `\nПройдено: ${g.name}`);
       here.forEach(p => tip += `\nСейчас: ${p.name}${p.active.game ? ' — ' + p.active.game : ''}`);
@@ -209,7 +258,7 @@ function renderConsPanel() {
 
 function renderLog() {
   const f = t => new Date(t).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-  $('#log').innerHTML = state.log.map(l => `<li style="--pc:${l.color}"><span class="muted">${f(l.t)}</span> ${l.html}</li>`).join('')
+  $('#log').innerHTML = state.log.map(l => `<li style="--pc:${l.color}"><span class="muted">${f(l.t)}</span> <b>${esc(l.name)}</b> ${esc(l.text)}</li>`).join('')
     || '<li class="muted" style="list-style:none">Пока пусто</li>';
 }
 
@@ -231,10 +280,10 @@ function choose() {
   if (!c || availability(p, c)) return;
   commit(() => {
     p.active = { cid: c.id, progress: 0, game: null, games: [] };
-    log(p, `<b>${esc(p.name)}</b> выбрал созвездие «${esc(c.name)}»`);
+    log(p, `выбрал созвездие «${c.name}»`);
   });
   c.stars.forEach((s, i) => setTimeout(() => fxRing(s.x, s.y, p.color, 60), i * 120));
-  banner(`<b>${esc(p.name)}</b> выбирает «${esc(c.name)}»`, p.color, `${c.stars.length} звёзд · бонус +${money(c.bonus)}`);
+  banner(`<b>${esc(p.name)}</b> выбирает «${esc(c.name)}»`, p.color, `${c.stars.length} звёзд · бонус +${moneyText(c.bonus)}`);
 }
 
 function roll() {
@@ -256,7 +305,7 @@ function roll() {
       ui.rolling = null;
       commit(() => {
         p.active.game = pick;
-        log(p, `<b>${esc(p.name)}</b> получает игру <i>${esc(pick)}</i> (${esc(d.name)})`);
+        log(p, `получает игру «${pick}» (${d.name})`);
       });
       fxRing(s.x, s.y, d.color, 70); fxBurst(s.x, s.y, d.color);
       banner(`<b>${esc(p.name)}</b>: ${esc(pick)}`, p.color, `${d.name} · ${d.duration}`);
@@ -275,7 +324,7 @@ function setManualGame(name) {
   if (!p?.active || !name.trim()) return;
   commit(() => {
     p.active.game = name.trim();
-    log(p, `<b>${esc(p.name)}</b> берёт игру <i>${esc(name.trim())}</i>`);
+    log(p, `берёт игру «${name.trim()}»`);
   });
 }
 
@@ -287,23 +336,23 @@ function complete() {
   commit(() => {
     p.balance += Number(d.currency);
     p.active.games.push({ name: p.active.game, d: s.d });
-    log(p, `<b>${esc(p.name)}</b> прошёл <i>${esc(p.active.game)}</i> — +${money(d.currency)}`);
+    log(p, `прошёл «${p.active.game}» — +${d.currency} ${cur()}`);
     p.active.progress++;
     p.active.game = null;
     if (finished) {
       p.balance += Number(c.bonus);
       p.done.push({ cid: c.id, games: p.active.games });
       p.active = null;
-      log(p, `<b>${esc(p.name)}</b> собрал созвездие «${esc(c.name)}»! ${esc(c.reward)} · +${money(c.bonus)}`);
+      log(p, `собрал созвездие «${c.name}»! ${c.reward} · +${c.bonus} ${cur()}`);
     }
   });
   fxBurst(s.x, s.y, p.color); fxRing(s.x, s.y, p.color, 80);
   fxText(s.x, s.y - 20, `+${d.currency}${cur()}`, '#ffd23f');
   if (finished) {
     c.stars.forEach((st, k) => setTimeout(() => { fxBurst(st.x, st.y, p.color); fxRing(st.x, st.y, '#fff', 90); }, 300 + k * 140));
-    banner(`<b>${esc(p.name)}</b> собрал «${esc(c.name)}»!`, p.color, `🏆 ${c.reward} · +${money(c.bonus)}`, true, 5);
+    banner(`<b>${esc(p.name)}</b> собрал «${esc(c.name)}»!`, p.color, `🏆 ${c.reward} · +${moneyText(c.bonus)}`, true, 5);
   } else {
-    banner(`<b>${esc(p.name)}</b> зажигает звезду ${i + 1}/${c.stars.length}`, p.color, `${d.name} · +${money(d.currency)}`);
+    banner(`<b>${esc(p.name)}</b> зажигает звезду ${i + 1}/${c.stars.length}`, p.color, `${d.name} · +${moneyText(d.currency)}`);
   }
 }
 
@@ -312,7 +361,7 @@ function abandon() {
   if (!p?.active) return;
   const c = getCons(p.active.cid);
   if (!confirm(`Снять ${p.name} с созвездия «${c.name}»? Прогресс по нему пропадёт (валюта останется).`)) return;
-  commit(() => { p.active = null; log(p, `<b>${esc(p.name)}</b> снят с созвездия «${esc(c.name)}»`); });
+  commit(() => { p.active = null; log(p, `снят с созвездия «${c.name}»`); });
 }
 
 // ---------- fx ----------
@@ -422,8 +471,7 @@ function onSettingsChange(e) {
   } else if (t.id === 'import-file' && t.files[0]) {
     t.files[0].text().then(txt => {
       try {
-        const data = JSON.parse(txt);
-        if (!data.constellations || !data.players) throw new Error();
+        const data = normalize(JSON.parse(txt));
         commit(() => state = data);
         renderSettings(); toast('Данные импортированы');
       } catch { alert('Не удалось прочитать файл'); }
