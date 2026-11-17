@@ -297,10 +297,15 @@ function roll() {
   let options = pool.filter(g => !played.has(g) && g !== p.active.game);
   if (!options.length) options = pool;
   const pick = options[Math.floor(Math.random() * options.length)];
-  ui.rolling = { pid: p.id, text: pool[0] };
+  const act = p.active, token = {};
+  ui.rolling = { pid: p.id, text: pool[0], token };
   const start = performance.now(), dur = 1800;
   let k = 0;
   const step = () => {
+    if (ui.rolling?.token !== token || getPlayer(p.id)?.active !== act) {
+      if (ui.rolling?.token === token) ui.rolling = null;
+      return render();
+    }
     const t = performance.now() - start;
     if (t >= dur) {
       ui.rolling = null;
