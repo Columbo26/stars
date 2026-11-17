@@ -72,6 +72,7 @@ function undo() {
   state = JSON.parse(undoStack.pop());
   ui.rolling = null;
   save(); render();
+  if (!$('#modal').classList.contains('hidden')) renderSettings();
   toast('Последнее действие отменено');
 }
 
